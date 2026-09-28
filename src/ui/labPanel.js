@@ -1,4 +1,6 @@
-function rangeRow(parent, label, object, key, min, max, step, onInput, getValue) {
+import { PRESET_LIST } from '../simulation/parameters.js';
+
+function rangeRow(parent, label, object, targets, key, min, max, step, onInput) {
   const wrap = document.createElement('div');
   wrap.className = 'row';
   const lab = document.createElement('label');
@@ -12,45 +14,26 @@ function rangeRow(parent, label, object, key, min, max, step, onInput, getValue)
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
-  input.value = String(object[key]);
-  const refresh = () => {
-    object[key] = Number(input.value);
-    value.textContent = Number(input.value).toFixed(step < 0.01 ? 3 : 2);
-    onInput?.(object[key]);
-  };
-  input.addEventListener('input', refresh);
-  refresh();
+  const current = () => Number(targets && key in targets ? targets[key] : object[key].value);
+  input.value = String(current());
+  const digits = step < 0.01 ? 3 : 2;
+  const show = (val) => (value.textContent = val.toFixed(digits));
+  input.addEventListener('input', () => {
+    const val = Number(input.value);
+    if (targets && key in targets) targets[key] = val;
+    else object[key].value = val;
+    show(val);
+    onInput?.(val);
+  });
+  show(current());
   wrap.append(lab, input);
   parent.append(wrap);
   return {
-    input,
     refresh() {
-      if (getValue) {
-        const next = Number(getValue());
-        object[key] = next;
-        input.value = String(next);
-        value.textContent = next.toFixed(step < 0.01 ? 3 : 2);
-      }
+      const next = current();
+      input.value = String(next);
+      show(next);
     }
-  };
-}
-
-function checkRow(parent, label, initial, onChange, getValue) {
-  const wrap = document.createElement('div');
-  wrap.className = 'row';
-  const lab = document.createElement('label');
-  const name = document.createElement('span');
-  name.textContent = label;
-  const input = document.createElement('input');
-  input.type = 'checkbox';
-  input.checked = initial;
-  input.addEventListener('change', () => onChange(input.checked));
-  lab.append(name, input);
-  wrap.append(lab);
-  parent.append(wrap);
-  return {
-    input,
-    refresh() { if (getValue) input.checked = Boolean(getValue()); }
   };
 }
 
@@ -62,75 +45,129 @@ function button(parent, label, onClick) {
   return b;
 }
 
-export function createLabPanel({ params, onReset, onPreset, onModeChange, onPauseChange }) {
+function group(panel, title) {
+  const g = document.createElement('div');
+  g.className = 'group';
+  const h2 = document.createElement('h2');
+  h2.textContent = title;
+  g.append(h2);
+  panel.append(g);
+  return g;
+}
+
+export function createLabPanel({
+  params,
+  onReset,
+  onPreset,
+  onModeChange,
+  onPauseChange,
+  onToggleAudio,
+  onSeekAudio
+}) {
   const refreshers = [];
   const panel = document.createElement('aside');
   panel.className = 'panel';
-  panel.innerHTML = `
-    <h1>U3 · Forces Instrument</h1>
-    <p>LAB: aísla fuerzas, predice y prueba. <strong>P</strong> cambia a PERFORMANCE.</p>
-  `;
 
-  const sim = document.createElement('div');
-  sim.className = 'group';
-  sim.innerHTML = '<h2>Simulación</h2>';
-  panel.append(sim);
+  const h1 = document.createElement('h1');
+  h1.textContent = 'Audio Reactive Physarum';
+  const intro = document.createElement('p');
+  intro.innerHTML = 'Pulsa <b>P</b> para modo PERFORMANCE.';
+  panel.append(h1, intro);
 
-  const state = {
-    timeScale: params.timeScale.value,
-    maxSpeed: params.maxSpeed.value,
-    particleSize: params.particleSize.value,
-    radialStrength: params.radialStrength.value,
-    vortexStrength: params.vortexStrength.value,
-    dragCoefficient: params.dragCoefficient.value,
-    windX: params.wind.value.x,
-    windY: params.wind.value.y
-  };
+  // --- Música ---
+  const audioGroup = group(panel, 'Música');
+  const playBtn = button(audioGroup, '▶️ PLAY', () => {
+    const isPlaying = onToggleAudio();
+    playBtn.textContent = isPlaying ? '⏸ PAUSE' : '▶️ PLAY';
+    playBtn.style.background = isPlaying ? '#a600ff' : '';
+    playBtn.style.color = isPlaying ? '#fff' : '';
+  });
 
-  refreshers.push(rangeRow(sim, 'timeScale', state, 'timeScale', 0, 2, 0.01, (v) => params.timeScale.value = v, () => params.timeScale.value));
-  refreshers.push(rangeRow(sim, 'maxSpeed', state, 'maxSpeed', 0.2, 12, 0.1, (v) => params.maxSpeed.value = v, () => params.maxSpeed.value));
-  refreshers.push(rangeRow(sim, 'particleSize', state, 'particleSize', 0.005, 0.1, 0.001, (v) => params.particleSize.value = v, () => params.particleSize.value));
+  const progressWrap = document.createElement('div');
+  progressWrap.style.cssText = 'display:flex;align-items:center;gap:10px;margin-top:10px';
+  const progressSlider = document.createElement('input');
+  progressSlider.type = 'range';
+  progressSlider.min = 0;
+  progressSlider.max = 100;
+  progressSlider.step = 0.1;
+  progressSlider.value = 0;
+  progressSlider.style.flex = '1';
+  const progressLabel = document.createElement('span');
+  progressLabel.textContent = '0:00 / 0:00';
+  progressLabel.style.cssText = 'font-size:12px;color:#fff';
 
-  const force = document.createElement('div');
-  force.className = 'group';
-  force.innerHTML = '<h2>Fuerzas</h2>';
-  panel.append(force);
+  let isDragging = false;
+  progressSlider.addEventListener('pointerdown', () => (isDragging = true));
+  progressSlider.addEventListener('pointerup', () => (isDragging = false));
+  progressSlider.addEventListener('input', () => onSeekAudio(Number(progressSlider.value)));
+  progressWrap.append(progressSlider, progressLabel);
+  audioGroup.append(progressWrap);
 
-  refreshers.push(checkRow(force, 'Radial', params.radialEnabled.value > 0, (v) => params.radialEnabled.value = v ? 1 : 0, () => params.radialEnabled.value > 0));
-  refreshers.push(rangeRow(force, 'radialStrength', state, 'radialStrength', -8, 8, 0.05, (v) => params.radialStrength.value = v, () => params.radialStrength.value));
-  refreshers.push(checkRow(force, 'Vórtice', params.vortexEnabled.value > 0, (v) => params.vortexEnabled.value = v ? 1 : 0, () => params.vortexEnabled.value > 0));
-  refreshers.push(rangeRow(force, 'vortexStrength', state, 'vortexStrength', -8, 8, 0.05, (v) => params.vortexStrength.value = v, () => params.vortexStrength.value));
-  refreshers.push(checkRow(force, 'Drag', params.dragEnabled.value > 0, (v) => params.dragEnabled.value = v ? 1 : 0, () => params.dragEnabled.value > 0));
-  refreshers.push(rangeRow(force, 'dragCoefficient', state, 'dragCoefficient', 0, 1, 0.01, (v) => params.dragCoefficient.value = v, () => params.dragCoefficient.value));
-  refreshers.push(checkRow(force, 'Viento', params.windEnabled.value > 0, (v) => params.windEnabled.value = v ? 1 : 0, () => params.windEnabled.value > 0));
-  refreshers.push(rangeRow(force, 'wind.x', state, 'windX', -4, 4, 0.05, (v) => params.wind.value.x = v, () => params.wind.value.x));
-  refreshers.push(rangeRow(force, 'wind.y', state, 'windY', -4, 4, 0.05, (v) => params.wind.value.y = v, () => params.wind.value.y));
+  // --- Presets ---
+  const presetGroup = group(panel, 'Visuales (teclas 1-6)');
+  const presetButtons = PRESET_LIST.map((preset, i) =>
+    button(presetGroup, `${i + 1}. ${preset.name}`, () => onPreset(i))
+  );
 
-  const tests = document.createElement('div');
-  tests.className = 'group';
-  tests.innerHTML = '<h2>Pruebas de comportamiento</h2><p>Antes de pulsar una prueba, predice qué debería ocurrir.</p>';
-  panel.append(tests);
-  for (const [id, label] of [
-    ['inertia', '1 · Inercia'],
-    ['wind', '2 · Fuerza constante +X'],
-    ['attract', '3 · Atracción'],
-    ['repel', '4 · Repulsión'],
-    ['vortex', '5 · Vórtice']
-  ]) button(tests, label, () => onPreset(id));
+  // --- Physarum ---
+  const physGroup = group(panel, 'Physarum');
+  const R = (label, key, min, max, step) =>
+    refreshers.push(rangeRow(physGroup, label, params, params.targets, key, min, max, step));
+  R('Distancia sensor', 'sensorDist', 3, 40, 0.5);
+  R('Ángulo sensor', 'sensorAngle', 0.1, 1.4, 0.02);
+  R('Ángulo giro', 'rotateAngle', 0.05, 1.2, 0.02);
+  R('Paso', 'stepSize', 0.2, 3, 0.05);
+  R('Depósito', 'deposit', 0.02, 1.5, 0.01);
+  R('Decaimiento', 'decay', 0.005, 0.25, 0.005);
+  R('Difusión', 'diffuse', 0, 1, 0.01);
+  R('Fuerza del campo', 'fieldStrength', 0, 1.5, 0.01);
+  R('Frecuencia del campo', 'fieldFreq', 0.3, 3, 0.05);
+  R('Velocidad ondulante', 'velWobble', 0, 1, 0.01);
 
-  const actions = document.createElement('div');
-  actions.className = 'group';
-  actions.innerHTML = '<h2>Acciones</h2>';
-  panel.append(actions);
+  const lookGroup = group(panel, 'Color');
+  const L = (label, key, min, max, step) =>
+    refreshers.push(rangeRow(lookGroup, label, params, params.targets, key, min, max, step));
+  L('Exposición', 'exposure', 0.3, 4, 0.05);
+  L('Bandas (relieve)', 'bandAmount', 0, 1, 0.01);
+  L('Frecuencia bandas', 'bandFreq', 1, 20, 0.5);
+  L('Brillo alto', 'glow', 0, 1.5, 0.01);
+  refreshers.push(rangeRow(lookGroup, 'Velocidad tiempo', params, null, 'timeScale', 0, 2, 0.01));
+
+  // --- Acciones ---
+  const actions = group(panel, 'Acciones');
   button(actions, 'Reset', onReset);
-  button(actions, 'Pausar / continuar', () => onPauseChange());
+  button(actions, 'Pausar visuales', () => onPauseChange());
   button(actions, 'LAB / PERFORMANCE', () => onModeChange());
 
   document.body.append(panel);
 
+  const formatTime = (time) => {
+    const mins = Math.floor(time / 60);
+    const secs = Math.floor(time % 60)
+      .toString()
+      .padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
+
   return {
     element: panel,
-    setVisible(visible) { panel.classList.toggle('hidden', !visible); },
-    refresh() { for (const item of refreshers) item.refresh(); }
+    setVisible(visible) {
+      panel.classList.toggle('hidden', !visible);
+    },
+    refresh() {
+      for (const item of refreshers) item.refresh();
+    },
+    setActivePreset(index) {
+      presetButtons.forEach((b, i) => {
+        b.style.background = i === index ? '#a600ff' : '';
+        b.style.color = i === index ? '#fff' : '';
+      });
+    },
+    updateAudioTime(curr, total) {
+      if (!isDragging && total > 0) {
+        progressSlider.value = (curr / total) * 100;
+        progressLabel.textContent = `${formatTime(curr)} / ${formatTime(total)}`;
+      }
+    }
   };
 }

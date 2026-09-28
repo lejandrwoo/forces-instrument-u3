@@ -1,130 +1,155 @@
 import * as THREE from 'three/webgpu';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import WebGPU from 'three/addons/capabilities/WebGPU.js';
 import './styles.css';
 
-import { createParameters } from './simulation/parameters.js';
+import { createParameters, PRESET_LIST } from './simulation/parameters.js';
 import { createSimulation } from './simulation/createSimulation.js';
 import { createLabPanel } from './ui/labPanel.js';
 
-
-
-/*
-2^15: 32768
-2^16: 65536
-2^17: 131072
-2^18: 262144
-2^19: 524288
-2^20: 1048576
-2^21: 2097152
-2^22: 4194304
-2^23: 8388608
-2^24: 16777216
-*/
-
-const PARTICLE_COUNT = 131072; //2^17. Increase only after measuring performance.
+// Más agentes = más detalle, más carga. Prueba: ?agents=131072 en GPUs modestas.
+const COUNT = Number(new URLSearchParams(location.search).get('agents')) || 262144;
+const GRID_H = 720;
+const STEP = 1 / 60; // la simulación avanza a 60 Hz fijos, sea cual sea el monitor
 
 async function main() {
   const mount = document.querySelector('#app');
 
   if (!WebGPU.isAvailable()) {
     mount.appendChild(WebGPU.getErrorMessage());
-    throw new Error('Este proyecto requiere WebGPU para ejecutar compute shaders.');
+    throw new Error('Este proyecto requiere WebGPU.');
   }
 
-  // THREE.JS MENTAL MODEL: scene + camera + renderer ---------------------
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color('#050607');
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+  camera.position.z = 1;
 
-  const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 100);
-  camera.position.set(0, 0, 11);
-
-  const renderer = new THREE.WebGPURenderer({ antialias: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const renderer = new THREE.WebGPURenderer({ antialias: false });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
   renderer.setSize(innerWidth, innerHeight);
   mount.appendChild(renderer.domElement);
   await renderer.init();
 
-  const orbit = new OrbitControls(camera, renderer.domElement);
-  orbit.enableDamping = true;
-  orbit.target.set(0, 0, 0);
+  // El mapa de rastro respeta la proporción de la ventana
+  const gridW = Math.min(2200, Math.max(640, Math.round(GRID_H * (innerWidth / innerHeight))));
 
   const params = createParameters();
-  const simulation = createSimulation({ renderer, scene, params, count: PARTICLE_COUNT });
-
-  // LAB HELPERS -----------------------------------------------------------
-  const attractorHelper = new THREE.Mesh(
-    new THREE.SphereGeometry(0.12, 16, 12),
-    new THREE.MeshBasicMaterial({ color: '#ffffff' })
-  );
-  scene.add(attractorHelper);
-  const axes = new THREE.AxesHelper(1.5);
-  scene.add(axes);
-
-  // POINTER -> WORLD POSITION --------------------------------------------
-  // This is a useful camera concept: screen coordinates are not world coords.
-  const pointerNdc = new THREE.Vector2();
-  const raycaster = new THREE.Raycaster();
-  const interactionPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-  const hit = new THREE.Vector3();
-
-  addEventListener('pointermove', (event) => {
-    pointerNdc.x = (event.clientX / innerWidth) * 2 - 1;
-    pointerNdc.y = -(event.clientY / innerHeight) * 2 + 1;
-    raycaster.setFromCamera(pointerNdc, camera);
-    if (raycaster.ray.intersectPlane(interactionPlane, hit)) {
-      params.attractor.value.copy(hit);
-      attractorHelper.position.copy(hit);
-    }
+  const simulation = createSimulation({
+    renderer,
+    scene,
+    params,
+    count: COUNT,
+    gridWidth: gridW,
+    gridHeight: GRID_H
   });
 
+  // ---------------- AUDIO ----------------
+  let audioContext, analyser, dataArray, audioEl;
+  let isAudioPlaying = false;
+  let panel;
+
+  const toggleAudio = () => {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      audioEl = new Audio('/sea-of-voices-audio.mp3');
+      audioEl.crossOrigin = 'anonymous';
+      audioEl.loop = true;
+
+      const source = audioContext.createMediaElementSource(audioEl);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024; // 512 bins de ~43 Hz: graves, medios y agudos bien separados
+      analyser.smoothingTimeConstant = 0.55;
+      source.connect(analyser);
+      analyser.connect(audioContext.destination);
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      audioEl.addEventListener('timeupdate', () => {
+        panel?.updateAudioTime(audioEl.currentTime, audioEl.duration);
+      });
+    }
+
+    if (audioContext.state === 'suspended') audioContext.resume();
+
+    if (audioEl.paused) {
+      audioEl.play();
+      isAudioPlaying = true;
+      return true;
+    }
+    audioEl.pause();
+    isAudioPlaying = false;
+    return false;
+  };
+
+  const seekAudio = (percent) => {
+    if (audioEl && audioEl.duration) audioEl.currentTime = (percent / 100) * audioEl.duration;
+  };
+
+  const bandAverage = (from, to) => {
+    let sum = 0;
+    for (let i = from; i < to; i++) sum += dataArray[i];
+    return sum / (to - from);
+  };
+
+  // Envolvente con ataque instantáneo y caída suave, para que no parpadee
+  const env = { bass: 0, mid: 0, high: 0 };
+  let bassSlow = 0;
+  let lastBeat = 0;
+
+  const analyseAudio = (delta, now) => {
+    let bass = 0, mid = 0, high = 0;
+
+    if (isAudioPlaying && analyser) {
+      analyser.getByteFrequencyData(dataArray);
+      bass = Math.min(bandAverage(1, 7) / 170, 1); //   ~45–300 Hz
+      mid = Math.min(bandAverage(7, 60) / 150, 1); //   ~300 Hz–2.6 kHz
+      high = Math.min(bandAverage(60, 250) / 120, 1); // ~2.6–10 kHz
+    }
+
+    const release = Math.exp(-delta * 6);
+    env.bass = Math.max(bass, env.bass * release);
+    env.mid = Math.max(mid, env.mid * release);
+    env.high = Math.max(high, env.high * release);
+
+    params.audioBass.value = env.bass;
+    params.audioMid.value = env.mid;
+    params.audioHigh.value = env.high;
+    params.songEnergy.value = env.bass * 0.5 + env.mid * 0.3 + env.high * 0.2;
+
+    // Golpe de bajo: el bajo supera su promedio reciente → pulso de onda
+    bassSlow += (bass - bassSlow) * Math.min(delta * 1.5, 1);
+    if (isAudioPlaying && bass > bassSlow * 1.3 + 0.08 && now - lastBeat > 0.28) {
+      lastBeat = now;
+      params.firePulse(0.5 + bass * 0.8);
+    }
+  };
+
+  // ---------------- PUNTERO ----------------
+  addEventListener('pointermove', (event) => {
+    params.pointer.value.set(
+      (event.clientX / innerWidth) * simulation.gridWidth,
+      (1 - event.clientY / innerHeight) * simulation.gridHeight
+    );
+  });
+  document.addEventListener('mouseleave', () => params.pointer.value.set(-10000, -10000));
+
+  // ---------------- ESTADO / UI ----------------
   let paused = false;
   let mode = 'LAB';
-  let panel;
-  let savedRadialStrength = params.radialStrength.value;
-  let savedRadialEnabled = params.radialEnabled.value;
+  const hud = document.createElement('div');
+  hud.className = 'hud';
+  document.body.append(hud);
 
-  const applyPreset = (id) => {
-    params.windEnabled.value = 0;
-    params.radialEnabled.value = 0;
-    params.vortexEnabled.value = 0;
-    params.dragEnabled.value = 0;
-    params.wind.value.set(0, 0, 0);
-    params.initialSpeed.value = 0;
-
-    if (id === 'inertia') {
-      params.initialSpeed.value = 0.8;
-    } else if (id === 'wind') {
-      params.windEnabled.value = 1;
-      params.wind.value.set(1.5, 0, 0);
-    } else if (id === 'attract') {
-      params.radialEnabled.value = 1;
-      params.radialStrength.value = 3.0;
-    } else if (id === 'repel') {
-      params.radialEnabled.value = 1;
-      params.radialStrength.value = -3.0;
-    } else if (id === 'vortex') {
-      params.radialEnabled.value = 1;
-      params.radialStrength.value = 1.0;
-      params.vortexEnabled.value = 1;
-      params.vortexStrength.value = 3.0;
-      params.dragEnabled.value = 1;
-      params.dragCoefficient.value = 0.08;
-    }
-    simulation.reset();
+  const applyPreset = (index) => {
+    params.applyPreset(index);
     panel?.refresh();
+    panel?.setActivePreset(index);
   };
 
   const setMode = (next) => {
     mode = next;
     const lab = mode === 'LAB';
     panel.setVisible(lab);
-    axes.visible = lab;
-    attractorHelper.visible = lab;
-    //orbit.enabled = lab;
     hud.innerHTML = lab
-      ? '<strong>LAB</strong> · P: performance · R: reset · 1–5: pruebas'
-      //: '<strong>PERFORMANCE</strong> · P: lab · espacio: invertir radial · puntero: atractor';
+      ? '<b>PHYSARUM WAVES</b> · 1-6: visuales · W: caos · A: giro · S: pulso · D: remolino · Espacio: repeler'
       : '';
   };
 
@@ -133,65 +158,72 @@ async function main() {
     onReset: () => simulation.reset(),
     onPreset: applyPreset,
     onModeChange: () => setMode(mode === 'LAB' ? 'PERFORMANCE' : 'LAB'),
-    onPauseChange: () => paused = !paused
+    onPauseChange: () => (paused = !paused),
+    onToggleAudio: toggleAudio,
+    onSeekAudio: seekAudio
   });
-
-  const hud = document.createElement('div');
-  hud.className = 'hud';
-  document.body.append(hud);
+  panel.setActivePreset(params.getActivePreset());
   setMode('LAB');
 
-  // BASELINE LIVE INSTRUMENT MAPPING -------------------------------------
-  // Students are expected to redesign this mapping for their own instrument.
+  // ---------------- TECLADO ----------------
   addEventListener('keydown', (event) => {
-    //console.log('radial inverted', params.radialStrength.value);
     if (event.repeat) return;
-    if (event.code === 'KeyP') setMode(mode === 'LAB' ? 'PERFORMANCE' : 'LAB');
-    if (event.code === 'KeyR') simulation.reset();
-    if (event.code === 'Digit1') applyPreset('inertia');
-    if (event.code === 'Digit2') applyPreset('wind');
-    if (event.code === 'Digit3') applyPreset('attract');
-    if (event.code === 'Digit4') applyPreset('repel');
-    if (event.code === 'Digit5') applyPreset('vortex');
+    const code = event.code;
 
-    if (event.code === 'Space') {
+    if (code === 'KeyP') setMode(mode === 'LAB' ? 'PERFORMANCE' : 'LAB');
+    if (code === 'KeyR') simulation.reset();
+
+    // 1–6 → cada visual (teclado normal y numérico)
+    const match = /^(?:Digit|Numpad)([1-9])$/.exec(code);
+    if (match) {
+      const index = Number(match[1]) - 1;
+      if (index < PRESET_LIST.length) applyPreset(index);
+    }
+
+    if (code === 'KeyW') params.keyboardChaos.value = 1.5; // sacudida de rumbo
+    if (code === 'KeyA') params.keyboardRotation.value += 1.0; // gira el campo
+    if (code === 'KeyS') params.firePulse(1.8); // pulso de onda expansiva
+    if (code === 'KeyD') params.keyboardWarp.value = 1.5; // remolino
+
+    if (code === 'Space') {
       event.preventDefault();
-      //savedRadialStrength = params.radialStrength.value || 2.0;
-      savedRadialStrength = params.radialStrength.value;
-      savedRadialEnabled = params.radialEnabled.value;
-      params.radialEnabled.value = 1;
-      params.radialStrength.value = -(savedRadialStrength || 2.0);
-      //console.log('radial inverted', params.radialStrength.value);
+      params.brushSign.value = -1; // el puntero repele mientras se mantiene
     }
   });
 
   addEventListener('keyup', (event) => {
-    if (event.code === 'Space') {
-      params.radialEnabled.value = savedRadialEnabled;
-      params.radialStrength.value = savedRadialStrength;
-    }
+    if (event.code === 'Space') params.brushSign.value = 1;
   });
 
-  addEventListener('resize', () => {
-    camera.aspect = innerWidth / innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(innerWidth, innerHeight);
-  });
+  addEventListener('resize', () => renderer.setSize(innerWidth, innerHeight));
 
+  // ---------------- LOOP ----------------
   simulation.reset();
+  const clock = new THREE.Clock();
+  let accumulator = 0;
 
-  // FRAME LOOP ------------------------------------------------------------
   renderer.setAnimationLoop(() => {
-    if (!paused) simulation.stepSimulation();
-    orbit.update();
+    const delta = Math.min(clock.getDelta(), 0.1);
+    const now = clock.elapsedTime;
+
+    analyseAudio(delta, now);
+    params.updateLerp(delta);
+
+    if (!paused) {
+      accumulator += delta;
+      let steps = 0;
+      while (accumulator >= STEP && steps < 3) {
+        simulation.stepSimulation();
+        accumulator -= STEP;
+        steps++;
+      }
+      if (steps === 3) accumulator = 0;
+    }
+
     renderer.render(scene, camera);
   });
 }
 
 main().catch((error) => {
   console.error(error);
-  const pre = document.createElement('pre');
-  pre.style.cssText = 'position:fixed;inset:16px;white-space:pre-wrap;color:#fff;z-index:50';
-  pre.textContent = String(error?.stack || error);
-  document.body.append(pre);
 });
