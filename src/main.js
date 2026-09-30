@@ -91,17 +91,62 @@ async function main() {
 
   // Envolvente con ataque instantáneo y caída suave, para que no parpadee
   const env = { bass: 0, mid: 0, high: 0 };
-  let bassSlow = 0;
-  let lastBeat = 0;
+
+  // Detector de golpes por banda: el valor actual supera su promedio reciente.
+  const onsets = {
+    bass: { avg: 0, last: 0, ratio: 1.25, floor: 0.06, cooldown: 0.22 },
+    mid: { avg: 0, last: 0, ratio: 1.25, floor: 0.06, cooldown: 0.35 },
+    high: { avg: 0, last: 0, ratio: 1.35, floor: 0.06, cooldown: 0.18 }
+  };
+  const detect = (key, value, delta, now) => {
+    const st = onsets[key];
+    const hit = value > st.avg * st.ratio + st.floor && now - st.last > st.cooldown;
+    st.avg += (value - st.avg) * Math.min(delta * 1.5, 1);
+    if (!hit) return 0;
+    st.last = now;
+    return Math.min(1, value - st.avg + 0.3); // fuerza del golpe, 0.3–1
+  };
+
+  // "Brillo" del sonido (centroide espectral): sube o baja según la melodía/armonía.
+  let centroidFast = 0.5;
+  let centroidSlow = 0.5;
+  const spectralCentroid = () => {
+    let num = 0, den = 0;
+    for (let i = 1; i < 250; i++) {
+      num += i * dataArray[i];
+      den += dataArray[i];
+    }
+    return den > 0 ? Math.min(Math.log2(1 + num / den) / Math.log2(250), 1) : 0.5;
+  };
+
+  // Tempo: mediana del intervalo entre bombos → 70–180 BPM se mapea a 0.75–1.35
+  const kickTimes = [];
+  let tempoSmooth = 1;
+  const updateTempo = (delta, now, playing) => {
+    while (kickTimes.length && now - kickTimes[0] > 6) kickTimes.shift();
+    let target = 1;
+    if (playing && kickTimes.length >= 4) {
+      const gaps = [];
+      for (let i = 1; i < kickTimes.length; i++) gaps.push(kickTimes[i] - kickTimes[i - 1]);
+      gaps.sort((a, b) => a - b);
+      let bpm = 60 / Math.max(gaps[Math.floor(gaps.length / 2)], 0.05);
+      while (bpm > 180) bpm /= 2;
+      while (bpm < 70) bpm *= 2;
+      target = 0.75 + ((bpm - 70) / 110) * 0.6;
+    }
+    tempoSmooth += (target - tempoSmooth) * Math.min(delta * 0.5, 1); // cambia despacio (~2 s)
+    params.tempo.value = tempoSmooth;
+  };
 
   const analyseAudio = (delta, now) => {
     let bass = 0, mid = 0, high = 0;
+    const playing = isAudioPlaying && analyser;
 
-    if (isAudioPlaying && analyser) {
+    if (playing) {
       analyser.getByteFrequencyData(dataArray);
-      bass = Math.min(bandAverage(1, 7) / 170, 1); //   ~45–300 Hz
-      mid = Math.min(bandAverage(7, 60) / 150, 1); //   ~300 Hz–2.6 kHz
-      high = Math.min(bandAverage(60, 250) / 120, 1); // ~2.6–10 kHz
+      bass = Math.min(bandAverage(1, 7) / 160, 1); //    ~45–300 Hz
+      mid = Math.min(bandAverage(7, 60) / 140, 1); //    ~300 Hz–2.6 kHz
+      high = Math.min(bandAverage(60, 250) / 110, 1); // ~2.6–10 kHz
     }
 
     const release = Math.exp(-delta * 6);
@@ -114,12 +159,39 @@ async function main() {
     params.audioHigh.value = env.high;
     params.songEnergy.value = env.bass * 0.5 + env.mid * 0.3 + env.high * 0.2;
 
-    // Golpe de bajo: el bajo supera su promedio reciente → pulso de onda
-    bassSlow += (bass - bassSlow) * Math.min(delta * 1.5, 1);
-    if (isAudioPlaying && bass > bassSlow * 1.3 + 0.08 && now - lastBeat > 0.28) {
-      lastBeat = now;
-      params.firePulse(0.5 + bass * 0.8);
+    const kick = detect('bass', bass, delta, now);
+    const melody = detect('mid', mid, delta, now);
+    const hat = detect('high', high, delta, now);
+
+    if (kick) kickTimes.push(now);
+    updateTempo(delta, now, playing);
+
+    if (!playing) return;
+
+    // Los efectos que antes daban W A S D, ahora los da la canción (suaves):
+    //   S · pulso de onda      ← golpe de bajo (bombo)
+    //   W · sacudida de rumbo  ← transitorios agudos (hi-hat, caja) y bombos fuertes
+    //   D · remolino           ← golpes en los medios (voz, melodía)
+    //   A · giro del campo     ← movimiento del brillo del sonido (sube/baja la armonía)
+    if (kick) {
+      params.firePulse(0.5 + kick * 0.8);
+      params.hitBeat(0.55 + kick * 0.6);
+      params.keyboardChaos.value = Math.max(params.keyboardChaos.value, 0.12 + kick * 0.2);
     }
+    if (hat) {
+      params.keyboardChaos.value = Math.max(params.keyboardChaos.value, 0.15 + hat * 0.3);
+      params.hitSnap(0.5 + hat * 0.5);
+    }
+    if (melody) {
+      params.keyboardWarp.value = Math.max(params.keyboardWarp.value, 0.3 + melody * 0.5);
+      params.hitSnap(0.35 + melody * 0.4);
+    }
+
+    centroidFast += (spectralCentroid() - centroidFast) * Math.min(delta * 6, 1);
+    centroidSlow += (centroidFast - centroidSlow) * Math.min(delta * 0.8, 1);
+    const drift = centroidFast - centroidSlow; // >0 el sonido se vuelve más agudo
+    params.keyboardRotation.value += drift * delta * 14;
+    if (melody) params.keyboardRotation.value += Math.sign(drift || 1) * (0.1 + melody * 0.25);
   };
 
   // ---------------- PUNTERO ----------------
@@ -149,7 +221,7 @@ async function main() {
     const lab = mode === 'LAB';
     panel.setVisible(lab);
     hud.innerHTML = lab
-      ? '<b>PHYSARUM WAVES</b> · 1-6: visuales · W: caos · A: giro · S: pulso · D: remolino · Espacio: repeler'
+      ? '<b>PHYSARUM WAVES</b> · 1-6: visuales · P: performance · Espacio: repeler'
       : '';
   };
 
@@ -180,10 +252,6 @@ async function main() {
       if (index < PRESET_LIST.length) applyPreset(index);
     }
 
-    if (code === 'KeyW') params.keyboardChaos.value = 1.5; // sacudida de rumbo
-    if (code === 'KeyA') params.keyboardRotation.value += 1.0; // gira el campo
-    if (code === 'KeyS') params.firePulse(1.8); // pulso de onda expansiva
-    if (code === 'KeyD') params.keyboardWarp.value = 1.5; // remolino
 
     if (code === 'Space') {
       event.preventDefault();

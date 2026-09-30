@@ -113,7 +113,7 @@ export function createSimulation({
     const contour = norm2(vec2(gy.negate(), gx));
 
     // Anillos + radial, girables con la tecla A y con los medios
-    const twist = params.keyboardRotation.add(params.audioMid.mul(0.5));
+    const twist = params.keyboardRotation.add(params.audioMid.mul(0.65));
     const swirl = radial
       .mul(w.y)
       .add(tangent.mul(w.x.add(params.keyboardWarp.mul(2.0))));
@@ -172,7 +172,7 @@ export function createSimulation({
       .add(params.attract2.mul(m2));
     const sd = params.sensorDist.mul(dot(params.speciesSensor, mask));
     const stepMul = dot(params.speciesStep, mask);
-    const sa = params.sensorAngle.add(params.audioMid.mul(0.25));
+    const sa = params.sensorAngle.add(params.audioMid.mul(0.35));
     const ra = params.rotateAngle;
 
     // --- sentir ---
@@ -199,18 +199,32 @@ export function createSimulation({
     const chaos = params.keyboardChaos
       .mul(1.1)
       .add(params.transitionBurst.mul(0.9))
-      .add(params.audioBass.mul(0.06));
+      .add(params.audioBass.mul(0.09));
     ang.addAssign(r2.sub(0.5).mul(2.0).mul(chaos));
+
+    // --- serpenteo lateral: las líneas "bailan" con el bombo y la voz ---
+    const swing = sin(px.mul(0.021).add(py.mul(0.016)).add(params.phase.mul(3.0))).mul(
+      params.beat.mul(0.14).add(params.snap.mul(0.1))
+    );
+    ang.addAssign(swing);
 
     // --- seguir el campo de flujo (como eje: vale en ambos sentidos) ---
     const field = fieldVector(px, py);
     const h = vec2(cos(ang), sin(ang)).toVar();
     const align = select(dot(h, field.fv).greaterThanEqual(0.0), 1.0, -1.0);
-    const strength = params.fieldStrength.mul(float(1.0).add(params.songEnergy.mul(0.8)));
+    const strength = params.fieldStrength.mul(float(1.0).add(params.songEnergy.mul(1.1)));
     const inVoid = step(field.r, params.voidRadius); // 1 si está dentro del "vacío" central
+
+    // Onda expansiva: al golpe del bombo, el anillo empuja físicamente las líneas hacia afuera
+    const rw = field.r.sub(params.pulseRadius).div(0.07);
+    const ringPush = exp(rw.mul(rw).negate())
+      .mul(params.pulseAmp)
+      .mul(clamp(params.songEnergy.mul(4.0), 0.0, 1.0));
+
     const steered = h
       .add(field.fv.mul(align).mul(strength))
       .add(field.radial.mul(inVoid).mul(1.5))
+      .add(field.radial.mul(ringPush).mul(0.9))
       .toVar();
     ang.assign(mod(atan(steered.y, steered.x), float(TAU)));
 
@@ -218,13 +232,22 @@ export function createSimulation({
     const wobble = sin(params.phase.mul(2.0).add(px.mul(0.017)).sub(py.mul(0.013)))
       .mul(0.5)
       .add(cos(px.mul(0.009).add(py.mul(0.021)).sub(params.phase)).mul(0.5));
+    // Cada zona reacciona a una parte del espectro: centro = graves, medio = medios, borde = agudos
+    const zoneMid = smoothstep(0.08, 0.3, field.r);
+    const zoneOut = smoothstep(0.28, 0.6, field.r);
+    const bandLocal = mix(mix(params.audioBass, params.audioMid, zoneMid), params.audioHigh, zoneOut);
+
     const speed = params.stepSize
       .mul(stepMul)
       .mul(params.timeScale)
+      .mul(params.tempo)
       .mul(
         float(1.0)
           .add(wobble.mul(params.velWobble))
-          .add(params.audioBass.mul(0.8))
+          .add(params.audioBass.mul(1.0))
+          .add(params.beat.mul(0.7))
+          .add(bandLocal.mul(0.35))
+          .add(ringPush.mul(0.5))
           .add(params.transitionBurst.mul(1.2))
       );
     const nx = mod(px.add(cos(ang).mul(speed)), float(W)).toVar();
@@ -235,9 +258,11 @@ export function createSimulation({
     const ncy = ny.sub(H * 0.5).div(H);
     const nr = sqrt(ncx.mul(ncx).add(ncy.mul(ncy)));
     const outside = step(params.voidRadius, nr);
+    const core = mix(float(1.0), clamp(nr.div(0.12), 0.12, 1.0), params.coreSoft);
     const dep = params.deposit
       .mul(outside)
-      .mul(float(1.0).add(params.audioBass.mul(0.7)).add(params.songEnergy.mul(0.3)));
+      .mul(core)
+      .mul(float(1.0).add(params.audioBass.mul(1.0)).add(params.songEnergy.mul(0.45)));
     trail.element(cellIndex(nx, ny)).addAssign(vec4(mask.mul(dep), 0.0));
 
     a.assign(vec4(nx, ny, ang, sp));
@@ -265,7 +290,16 @@ export function createSimulation({
     const avg = sum.div(9.0);
 
     const v = mix(trail.element(i), avg, params.diffuse).toVar();
-    const decayEff = clamp(params.decay.add(params.transitionBurst.mul(0.06)), 0.0, 0.6);
+    // Con audioTame, el decaimiento acompaña al depósito de la música: el rastro
+    // se mueve más rápido pero no se acumula hasta quemar la imagen.
+    const decayComp = float(1.0).add(
+      params.audioTame.mul(0.85).mul(params.audioBass.add(params.songEnergy.mul(0.45)))
+    );
+    const decayEff = clamp(
+      params.decay.mul(decayComp).add(params.transitionBurst.mul(0.06)),
+      0.0,
+      0.6
+    );
     v.mulAssign(oneMinus(decayEff));
 
     const fx = float(x).add(0.5);
@@ -286,7 +320,7 @@ export function createSimulation({
     const r = sqrt(cx.mul(cx).add(cy.mul(cy)));
     const rd = r.sub(params.pulseRadius).div(0.035);
     const ring = exp(rd.mul(rd).negate()).mul(params.pulseAmp);
-    v.addAssign(vec4(0.6, 1.0, 0.4, 0.0).mul(ring).mul(0.8));
+    v.addAssign(vec4(0.6, 1.0, 0.4, 0.0).mul(ring).mul(mix(float(0.8), float(0.35), params.audioTame)));
 
     // Vacío central (pupila del iris, centro del túnel)
     v.mulAssign(
@@ -327,7 +361,12 @@ export function createSimulation({
       fy
     );
 
-    const tone = (v) => oneMinus(exp(v.mul(params.exposure).negate()));
+    const expo = params.exposure.div(
+      float(1.0).add(
+        params.audioTame.mul(params.songEnergy.mul(0.5).add(params.audioBass.mul(0.3)))
+      )
+    );
+    const tone = (v) => oneMinus(exp(v.mul(expo).negate()));
     const tMain = tone(t.x);
     const tA = tone(t.y);
     const tB = tone(t.z);
@@ -339,7 +378,9 @@ export function createSimulation({
     const g3 = smoothstep(0.62, 1.0, s);
     const col = mix(params.colBg, params.colLow, g1).toVar();
     col.assign(mix(col, params.colMid, g2));
-    col.assign(mix(col, params.colHigh, g3.mul(params.glow.add(params.audioHigh.mul(0.5)))));
+    const glowRaw = params.glow.add(params.audioHigh.mul(0.7));
+    const glowEff = mix(glowRaw, min(glowRaw, 1.0), params.audioTame);
+    col.assign(mix(col, params.colHigh, g3.mul(glowEff)));
     col.addAssign(params.colAccent.mul(tA).mul(0.75));
     col.addAssign(params.colAccent2.mul(tB).mul(0.6));
 
@@ -352,7 +393,10 @@ export function createSimulation({
     col.mulAssign(mix(1.0, mix(0.3, 1.3, shaped), bandMask));
 
     // Golpe de bajo + viñeta
-    col.mulAssign(float(1.0).add(params.audioBass.mul(0.35)));
+    const lift = float(1.0).add(
+      params.audioBass.mul(mix(float(0.45), oneMinus(g3).mul(0.18), params.audioTame))
+    );
+    col.mulAssign(lift);
     const d = length(uv().sub(0.5));
     col.mulAssign(oneMinus(smoothstep(0.35, 1.0, d).mul(0.55)));
 

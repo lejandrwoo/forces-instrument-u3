@@ -30,6 +30,8 @@ const base = {
   fieldFreq: 1.0,
   velWobble: 0.25,
   voidRadius: 0.0,
+  coreSoft: 0.0,
+  audioTame: 0.0,
   bandAmount: 0.0,
   bandFreq: 8.0,
   glow: 0.5
@@ -106,7 +108,7 @@ export const PRESET_LIST = [
     {
       sensorDist: 22, sensorAngle: 0.6, rotateAngle: 0.42, stepSize: 1.0,
       deposit: 0.3, decay: 0.045, diffuse: 0.3, exposure: 1.7,
-      fieldStrength: 0.35, velWobble: 0.2, voidRadius: 0.16
+      fieldStrength: 0.35, velWobble: 0.2, voidRadius: 0.0, coreSoft: 1.0
     },
     { fieldWeights: [0, 0.75, 0, 0.35] },
     {
@@ -122,7 +124,7 @@ export const PRESET_LIST = [
       sensorDist: 12, sensorAngle: 0.3, rotateAngle: 0.2, stepSize: 0.8,
       deposit: 0.45, decay: 0.035, diffuse: 0.65, exposure: 1.2,
       fieldStrength: 0.6, fieldFreq: 1.3, velWobble: 0.3,
-      bandAmount: 0.75, bandFreq: 9.0, glow: 0.8
+      bandAmount: 0.75, bandFreq: 9.0, glow: 0.8, audioTame: 1.0
     },
     { fieldWeights: [0, 0, 0, 1.0] },
     {
@@ -137,7 +139,7 @@ export const PRESET_LIST = [
     {
       sensorDist: 13, sensorAngle: 0.42, rotateAngle: 0.3, stepSize: 1.0,
       deposit: 0.4, decay: 0.075, diffuse: 0.4, exposure: 1.35,
-      fieldStrength: 0.5, fieldFreq: 1.2, velWobble: 0.3, voidRadius: 0.02,
+      fieldStrength: 0.5, fieldFreq: 1.2, velWobble: 0.3, voidRadius: 0.0, coreSoft: 1.0,
       bandAmount: 0.5, bandFreq: 7.0
     },
     { fieldWeights: [0.35, 0.45, 0, 0.6] },
@@ -183,6 +185,9 @@ export function createParameters() {
     fieldStrength: uniform(0.3),
     fieldFreq: uniform(1.0),
     voidRadius: uniform(0.0),
+    coreSoft: uniform(0.0), // suaviza la convergencia de líneas en el centro (sin agujero)
+    audioTame: uniform(0.0), // 1 = la música mueve las líneas pero NO satura el brillo
+    tempo: uniform(1.0), // ritmo de la canción: lenta < 1 < rápida
 
     // --- render / color ---
     exposure: uniform(1.4),
@@ -201,6 +206,8 @@ export function createParameters() {
     audioMid: uniform(0.0),
     audioHigh: uniform(0.0),
     songEnergy: uniform(0.0),
+    beat: uniform(0.0), // golpe seco de bombo (decae en ~0.1 s)
+    snap: uniform(0.0), // golpe de medios/agudos (voz, caja, hi-hat)
 
     // --- teclado (W A S D) y transición ---
     keyboardChaos: uniform(0.0), // W: sacudida de rumbo
@@ -223,7 +230,7 @@ export function createParameters() {
   const LERPED = [
     'sensorDist', 'sensorAngle', 'rotateAngle', 'stepSize', 'deposit', 'decay',
     'diffuse', 'velWobble', 'speciesSensor', 'speciesStep', 'attract0', 'attract1',
-    'attract2', 'fieldWeights', 'fieldStrength', 'fieldFreq', 'voidRadius',
+    'attract2', 'fieldWeights', 'fieldStrength', 'fieldFreq', 'voidRadius', 'coreSoft', 'audioTame',
     'exposure', 'bandAmount', 'bandFreq', 'glow', 'colBg', 'colLow', 'colMid',
     'colHigh', 'colAccent', 'colAccent2'
   ];
@@ -251,6 +258,14 @@ export function createParameters() {
     firePulse(1.0);
   }
 
+  function hitBeat(v = 1.0) {
+    params.beat.value = Math.min(1, Math.max(params.beat.value, v));
+  }
+
+  function hitSnap(v = 1.0) {
+    params.snap.value = Math.min(1, Math.max(params.snap.value, v));
+  }
+
   function firePulse(amp = 1.0) {
     params.pulseRadius.value = 0.02;
     params.pulseAmp.value = Math.max(params.pulseAmp.value, amp);
@@ -272,7 +287,18 @@ export function createParameters() {
       else uni.value.lerp(target, k);
     }
 
-    params.phase.value += dt * (0.25 + params.songEnergy.value * 1.4 + params.audioBass.value * 0.8);
+    params.phase.value +=
+      dt *
+      params.tempo.value *
+      (0.25 +
+        params.songEnergy.value * 1.4 +
+        params.audioBass.value * 0.8 +
+        params.audioMid.value * 0.5 +
+        params.beat.value * 1.6);
+
+    // Golpes de beat: suben de golpe y caen rápido
+    params.beat.value *= Math.exp(-dt * 11);
+    params.snap.value *= Math.exp(-dt * 9);
 
     // Impulsos que se desvanecen
     params.keyboardChaos.value *= 0.92;
@@ -301,6 +327,8 @@ export function createParameters() {
     targets,
     applyPreset,
     firePulse,
+    hitBeat,
+    hitSnap,
     tick,
     updateLerp,
     getActivePreset: () => activePreset
