@@ -204,7 +204,7 @@ export function createSimulation({
 
     // --- serpenteo lateral: las líneas "bailan" con el bombo y la voz ---
     const swing = sin(px.mul(0.021).add(py.mul(0.016)).add(params.phase.mul(3.0))).mul(
-      params.beat.mul(0.14).add(params.snap.mul(0.1))
+      params.beat.mul(0.2).add(params.snap.mul(0.12))
     );
     ang.addAssign(swing);
 
@@ -224,7 +224,7 @@ export function createSimulation({
     const steered = h
       .add(field.fv.mul(align).mul(strength))
       .add(field.radial.mul(inVoid).mul(1.5))
-      .add(field.radial.mul(ringPush).mul(0.9))
+      .add(field.radial.mul(ringPush).mul(1.2))
       .toVar();
     ang.assign(mod(atan(steered.y, steered.x), float(TAU)));
 
@@ -245,7 +245,7 @@ export function createSimulation({
         float(1.0)
           .add(wobble.mul(params.velWobble))
           .add(params.audioBass.mul(1.0))
-          .add(params.beat.mul(0.7))
+          .add(params.beat.mul(1.0))
           .add(bandLocal.mul(0.35))
           .add(ringPush.mul(0.5))
           .add(params.transitionBurst.mul(1.2))
@@ -394,7 +394,9 @@ export function createSimulation({
 
     // Golpe de bajo + viñeta
     const lift = float(1.0).add(
-      params.audioBass.mul(mix(float(0.45), oneMinus(g3).mul(0.18), params.audioTame))
+      params.audioBass
+        .mul(mix(float(0.45), oneMinus(g3).mul(0.18), params.audioTame))
+        .add(params.beat.mul(mix(float(0.3), oneMinus(g3).mul(0.1), params.audioTame)))
     );
     col.mulAssign(lift);
     const d = length(uv().sub(0.5));

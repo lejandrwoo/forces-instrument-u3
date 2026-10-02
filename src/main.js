@@ -95,7 +95,7 @@ async function main() {
 
   // Detector de golpes por banda: el valor actual supera su promedio reciente.
   const onsets = {
-    bass: { avg: 0, last: 0, ratio: 1.25, floor: 0.06, cooldown: 0.22 },
+    bass: { avg: 0, last: 0, ratio: 1.2, floor: 0.05, cooldown: 0.22 },
     mid: { avg: 0, last: 0, ratio: 1.25, floor: 0.06, cooldown: 0.35 },
     high: { avg: 0, last: 0, ratio: 1.35, floor: 0.06, cooldown: 0.18 }
   };
@@ -176,7 +176,7 @@ async function main() {
     //   A · giro del campo     ← movimiento del brillo del sonido (sube/baja la armonía)
     if (kick) {
       params.firePulse(0.5 + kick * 0.8);
-      params.hitBeat(0.55 + kick * 0.6);
+      params.hitBeat(0.7 + kick * 0.6);
       params.keyboardChaos.value = Math.max(params.keyboardChaos.value, 0.12 + kick * 0.2);
     }
     if (hat) {
@@ -221,6 +221,10 @@ async function main() {
     mode = next;
     const lab = mode === 'LAB';
     panel.setVisible(lab);
+    // En PERFORMANCE se oculta el cursor (también sobre el canvas)
+    const cursor = lab ? '' : 'none';
+    document.body.style.cursor = cursor;
+    renderer.domElement.style.cursor = cursor;
     hud.innerHTML = lab
       ? '<b>PHYSARUM WAVES</b> · 1-6: visuales · P: performance · Espacio: repeler'
       : '';

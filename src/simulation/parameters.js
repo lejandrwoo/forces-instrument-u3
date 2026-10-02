@@ -294,10 +294,10 @@ export function createParameters() {
         params.songEnergy.value * 1.4 +
         params.audioBass.value * 0.8 +
         params.audioMid.value * 0.5 +
-        params.beat.value * 1.6);
+        params.beat.value * 2.2);
 
     // Golpes de beat: suben de golpe y caen rápido
-    params.beat.value *= Math.exp(-dt * 11);
+    params.beat.value *= Math.exp(-dt * 9);
     params.snap.value *= Math.exp(-dt * 9);
 
     // Impulsos que se desvanecen
