@@ -50,7 +50,8 @@ async function main() {
   const toggleAudio = () => {
     if (!audioContext) {
       audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      audioEl = new Audio('/sea-of-voices-audio.mp3');
+      // BASE_URL respeta la subcarpeta de GitHub Pages (/porter-robinson/) y también funciona en local
+      audioEl = new Audio(import.meta.env.BASE_URL + 'sea-of-voices-audio.mp3');
       audioEl.crossOrigin = 'anonymous';
       audioEl.loop = true;
 
